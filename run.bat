@@ -61,6 +61,10 @@ echo.
 echo [RUN] Streamlit app - browser: http://localhost:8501
 echo       Press Ctrl+C in this window to stop.
 echo.
+rem config.toml has headless=true (no auto-open), so open the browser ourselves
+rem ~4s after launch, once the server is ready. Runs async while streamlit blocks.
+rem explorer (no inner quotes) avoids nested-quote parsing issues inside cmd /c.
+start "" /b cmd /c "ping -n 5 127.0.0.1 >nul & explorer http://localhost:8501"
 "%PY%" -m streamlit run app.py
 
 echo.
