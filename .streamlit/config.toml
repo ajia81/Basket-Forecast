@@ -1,0 +1,14 @@
+# 테마: 네이비 + 카퍼 (명세서 §1.2)
+[theme]
+base = "dark"
+primaryColor = "#B87333"            # 카퍼(강조)
+backgroundColor = "#0E1A2B"         # 네이비(배경)
+secondaryBackgroundColor = "#14233A"
+textColor = "#E8EDF2"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

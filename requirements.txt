@@ -1,0 +1,6 @@
+# 런타임 의존성 (배포 = Streamlit Cloud)
+streamlit>=1.43      # 리스크 #2: width="stretch" 신 API 지원 보장(use_container_width 폐기)
+pandas>=2.0
+numpy>=1.24
+altair>=5.0          # 화면4 가격 추세 차트
+requests>=2.31       # 실연동(load_from_api) — KAMIS/도매 API 호출
