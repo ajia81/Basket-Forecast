@@ -1,63 +1,69 @@
 @echo off
-chcp 65001 >nul
-setlocal enabledelayedexpansion
+setlocal
 
 rem ============================================================
-rem  장바구니 예보 AI — 실행 스크립트 (Windows)
-rem  최초 실행 시: 가상환경 생성 + 의존성 설치 후 앱 구동
-rem  이후 실행 시: 바로 앱 구동
+rem  Jangbaguni Yebo AI - launcher (Windows)
+rem  ASCII-only on purpose: Korean text in a .bat desyncs the
+rem  cmd parser under the cp949 codepage. App UI stays Korean.
+rem  Uses existing streamlit if present; builds .venv only if not.
 rem ============================================================
 
 cd /d "%~dp0"
 
 echo.
-echo ===== 장바구니 예보 AI =====
+echo ===== Jangbaguni Yebo AI =====
 echo.
 
-rem --- Python 확인 ---
+rem --- Python check ---
 where python >nul 2>nul
 if errorlevel 1 (
-    echo [오류] Python 을 찾을 수 없습니다.
-    echo        https://www.python.org 에서 설치 후 "Add Python to PATH" 를 켜주세요.
+    echo [ERROR] Python not found.
+    echo         Install from https://www.python.org and enable "Add Python to PATH".
     echo.
     pause
     exit /b 1
 )
 
-rem --- 가상환경(.venv) 준비 ---
-if not exist ".venv\Scripts\python.exe" (
-    echo [1/3] 가상환경(.venv) 생성 중...
+rem --- Pick interpreter: existing .venv first, else global python ---
+set "PY=python"
+if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
+
+rem --- Ensure streamlit; build .venv + install only when missing ---
+"%PY%" -c "import streamlit" >nul 2>nul
+if errorlevel 1 (
+    echo [SETUP] streamlit missing - creating .venv and installing deps... ^(first run, a few minutes^)
     python -m venv .venv
     if errorlevel 1 (
-        echo [오류] 가상환경 생성 실패.
+        echo [ERROR] venv creation failed.
         pause
         exit /b 1
     )
-    echo [2/3] 의존성 설치 중... ^(최초 1회, 수 분 소요^)
     ".venv\Scripts\python.exe" -m pip install --upgrade pip >nul
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt
     if errorlevel 1 (
-        echo [오류] 의존성 설치 실패.
+        echo [ERROR] dependency install failed ^(check network/proxy^).
         pause
         exit /b 1
     )
+    set "PY=.venv\Scripts\python.exe"
 ) else (
-    echo [건너뜀] 가상환경이 이미 있습니다.
+    echo [OK] streamlit already installed - launching directly.
 )
 
-rem --- 시크릿 파일 안내 (없어도 폴백 데이터로 동작) ---
+rem --- Secrets notice (sample demo works without it) ---
 if not exist ".streamlit\secrets.toml" (
-    echo.
-    echo [안내] .streamlit\secrets.toml 이 없습니다.
-    echo        실데이터 연동 없이 폴백 데이터로 동작합니다.
-    echo        실연동하려면 secrets.toml.example 을 복사해 키를 채우세요.
+    echo [INFO] .streamlit\secrets.toml not found - running on sample demo data.
+    echo        For real data, copy secrets.toml.example to secrets.toml and fill keys.
 )
 
-rem --- 앱 실행 ---
+rem --- Launch ---
 echo.
-echo [3/3] Streamlit 앱 실행... ^(브라우저: http://localhost:8501^)
-echo        종료하려면 이 창에서 Ctrl+C 를 누르세요.
+echo [RUN] Streamlit app - browser: http://localhost:8501
+echo       Press Ctrl+C in this window to stop.
 echo.
-".venv\Scripts\python.exe" -m streamlit run app.py
+"%PY%" -m streamlit run app.py
 
+echo.
+echo [STOPPED] Press any key to close this window.
+pause >nul
 endlocal
