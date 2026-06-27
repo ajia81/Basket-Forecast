@@ -24,14 +24,137 @@ from bf.core import (
 
 st.set_page_config(page_title="장바구니 예보 AI", page_icon="🛒", layout="wide")
 
-# 신호별 고정 색상(§4 SIG_COLOR)
+# 신호별 고정 색상(§4 SIG_COLOR) — 시맨틱 팔레트(좋음=초록/비쌈=로즈/주의=앰버/보통=슬레이트)
 SIG_COLOR = {
-    SIGNAL_BUY: "#2E7D32",    # 초록 — 지금 사면 좋은
-    SIGNAL_WAIT: "#C62828",   # 빨강 — 기다리기
-    SIGNAL_WATCH: "#F9A825",  # 노랑 — 변동성 주의
-    SIGNAL_NORMAL: "#90A4AE", # 회색 — 보통
+    SIGNAL_BUY: "#34D399",    # 에메랄드 — 지금 사면 좋은
+    SIGNAL_WAIT: "#FB7185",   # 로즈 — 기다리기(비쌈)
+    SIGNAL_WATCH: "#FBBF24",  # 앰버 — 변동성 주의
+    SIGNAL_NORMAL: "#9AA8BC", # 슬레이트 — 보통
 }
 SIG_EMOJI = {SIGNAL_BUY: "🟢", SIGNAL_WAIT: "🔴", SIGNAL_WATCH: "🟡", SIGNAL_NORMAL: "⚪"}
+SIG_CLASS = {SIGNAL_BUY: "buy", SIGNAL_WAIT: "wait", SIGNAL_WATCH: "watch",
+             SIGNAL_NORMAL: "normal"}
+
+
+# ── 디자인 시스템 (모던 카드 UI · §4 표시 전용) ────────────────────────────
+def inject_css() -> None:
+    """전역 테마 주입 — Pretendard 폰트 + 디자인 토큰 + 카드/칩/배너 스타일."""
+    st.markdown("""
+<style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/dist/web/static/pretendard.min.css');
+:root{
+  --font:'Pretendard','Pretendard Variable',-apple-system,BlinkMacSystemFont,'Segoe UI','Apple SD Gothic Neo','Noto Sans KR','Malgun Gothic',sans-serif;
+  --text:#EAF0F7; --muted:#94A6BD; --faint:#6B7F98;
+  --border:rgba(255,255,255,.07); --copper:#C98A4B; --copper-strong:#E0A05A;
+  --good:#34D399; --good-bg:rgba(52,211,153,.13);
+  --bad:#FB7185;  --bad-bg:rgba(251,113,133,.13);
+  --warn:#FBBF24; --warn-bg:rgba(251,191,36,.13);
+  --slate:#9AA8BC;--slate-bg:rgba(154,168,188,.13);
+}
+html,body,.stApp,[data-testid="stSidebar"]{font-family:var(--font);}
+.block-container{max-width:1200px;padding-top:2rem;}
+h1,h2,h3,h4{font-family:var(--font);letter-spacing:-.4px;}
+
+/* hero */
+.hero{margin:0 0 6px;}
+.hero .h-title{font-size:1.95rem;font-weight:900;letter-spacing:-1px;color:var(--text);display:flex;align-items:baseline;gap:6px;}
+.hero .h-title .ai{color:var(--copper-strong);}
+.hero .h-sub{color:var(--muted);margin-top:3px;font-size:.95rem;}
+.hero .h-sub b{color:var(--text);} .hero .h-sub .accent{color:var(--copper-strong);font-weight:700;}
+
+/* tabs */
+.stTabs [data-baseweb="tab-list"]{gap:4px;border-bottom:1px solid var(--border);}
+.stTabs [data-baseweb="tab"]{height:46px;padding:0 18px;background:transparent;color:var(--muted);font-weight:600;font-size:.98rem;}
+.stTabs [aria-selected="true"]{color:var(--text);background:linear-gradient(180deg,rgba(201,138,75,.16),rgba(201,138,75,0));border-bottom:2px solid var(--copper-strong);}
+
+/* section header */
+.sec{display:flex;align-items:center;gap:9px;font-weight:800;font-size:1.12rem;color:var(--text);margin:18px 0 14px;}
+.sec .bar{width:4px;height:19px;border-radius:3px;background:linear-gradient(var(--copper-strong),var(--copper));}
+.sec .hint{font-weight:500;font-size:.82rem;color:var(--faint);margin-left:2px;}
+
+/* banner */
+.banner{display:flex;gap:14px;align-items:flex-start;padding:17px 20px;border-radius:16px;margin:4px 0 8px;
+  background:linear-gradient(135deg,rgba(52,211,153,.15),rgba(201,138,75,.09));border:1px solid rgba(52,211,153,.30);}
+.banner.neutral{background:linear-gradient(135deg,rgba(154,168,188,.10),rgba(255,255,255,.02));border-color:var(--border);}
+.banner .ic{font-size:1.45rem;line-height:1.4;}
+.banner .bt{font-weight:800;font-size:1.05rem;color:var(--text);}
+.banner .bs{color:var(--muted);margin-top:4px;font-size:.92rem;}
+.banner b{color:var(--good);font-weight:700;}
+
+/* product grid + card */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:14px;}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin-top:6px;}
+.card{background:linear-gradient(180deg,#16273F,#111E30);border:1px solid var(--border);border-radius:18px;padding:16px 18px 15px;transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease;}
+.card:hover{transform:translateY(-3px);border-color:rgba(201,138,75,.45);box-shadow:0 12px 30px rgba(0,0,0,.38);}
+.card .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:11px;min-height:24px;}
+.card .name{display:flex;align-items:center;gap:8px;font-weight:700;font-size:1.04rem;color:var(--text);}
+.card .dot{width:9px;height:9px;border-radius:50%;box-shadow:0 0 0 3px rgba(255,255,255,.05);}
+.card .price{font-size:1.72rem;font-weight:800;letter-spacing:-.6px;color:var(--text);line-height:1.1;font-variant-numeric:tabular-nums;}
+.card .price .won{font-size:1rem;font-weight:700;margin-left:1px;}
+.card .price .unit{font-size:.8rem;color:var(--faint);font-weight:600;margin-left:3px;}
+.delta{display:inline-flex;align-items:center;gap:6px;margin-top:11px;padding:3px 11px;border-radius:999px;font-size:.82rem;font-weight:800;}
+.delta .lab{font-weight:600;opacity:.85;}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:13px;}
+.chip{font-size:.74rem;font-weight:700;padding:3px 9px;border-radius:8px;}
+.chip.season{color:#5EEAD4;background:rgba(45,212,191,.12);}
+.chip.buy{color:var(--good);background:var(--good-bg);} .chip.wait{color:var(--bad);background:var(--bad-bg);}
+.chip.watch{color:var(--warn);background:var(--warn-bg);} .chip.normal{color:var(--slate);background:var(--slate-bg);}
+.badge-glut{font-size:.72rem;font-weight:800;padding:3px 10px;border-radius:999px;color:#F4D9B0;
+  background:linear-gradient(135deg,rgba(201,138,75,.32),rgba(201,138,75,.14));border:1px solid rgba(201,138,75,.5);}
+
+/* kpi + list */
+.kpi{background:linear-gradient(180deg,#16273F,#111E30);border:1px solid var(--border);border-radius:16px;padding:15px 18px;}
+.kpi .lab{color:var(--muted);font-size:.83rem;font-weight:600;}
+.kpi .val{font-size:1.5rem;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums;}
+.list{background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:16px;padding:14px 17px;}
+.list .lt{font-weight:700;font-size:.96rem;margin-bottom:8px;color:var(--text);}
+.list .row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px dashed rgba(255,255,255,.07);font-size:.9rem;}
+.list .row:last-child{border-bottom:none;}
+.list .row .nm{color:var(--text);font-weight:600;} .list .row .pv{color:var(--muted);font-variant-numeric:tabular-nums;}
+.subline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:.92rem;margin:2px 0 4px;}
+</style>
+""", unsafe_allow_html=True)
+
+
+def _delta_html(chg: float) -> str:
+    """가격 변화율 → 색상 칩(소비자 관점: 하락=좋음 초록, 상승=로즈)."""
+    pct = abs(chg) * 100
+    if chg < -0.005:
+        return (f"<div class='delta' style='color:var(--good);background:var(--good-bg)'>"
+                f"▼ {pct:.0f}% <span class='lab'>싸졌어요</span></div>")
+    if chg > 0.005:
+        return (f"<div class='delta' style='color:var(--bad);background:var(--bad-bg)'>"
+                f"▲ {pct:.0f}% <span class='lab'>올랐어요</span></div>")
+    return ("<div class='delta' style='color:var(--slate);background:var(--slate-bg)'>"
+            "― 0% <span class='lab'>보합</span></div>")
+
+
+def product_card(s) -> str:
+    """제품 카드 HTML(단일 라인 — st.markdown 코드블록화 방지)."""
+    glut = ("<span class='badge-glut' title='공급 과잉 · 농가 판로 기여'>과잉</span>"
+            if s.is_glut else "")
+    chips = ""
+    if s.in_season:
+        chips += "<span class='chip season'>제철</span>"
+    chips += f"<span class='chip {SIG_CLASS[s.signal]}'>{s.signal}</span>"
+    return (
+        "<div class='card'><div class='head'>"
+        f"<span class='name'><span class='dot' style='background:{SIG_COLOR[s.signal]}'></span>{s.item}</span>"
+        f"{glut}</div>"
+        f"<div class='price'>{s.retail:,}<span class='won'>원</span><span class='unit'>/kg</span></div>"
+        f"{_delta_html(s.price_chg)}"
+        f"<div class='chips'>{chips}</div></div>")
+
+
+def kpi_html(label: str, value: str, accent: str = "var(--text)") -> str:
+    return (f"<div class='kpi'><div class='lab'>{label}</div>"
+            f"<div class='val' style='color:{accent}'>{value}</div></div>")
+
+
+def sec(title: str, hint: str = "") -> None:
+    h = f"<span class='hint'>{hint}</span>" if hint else ""
+    st.markdown(f"<div class='sec'><span class='bar'></span>{title}{h}</div>",
+                unsafe_allow_html=True)
 
 
 # ── 데이터 로딩 (캐싱 + 폴백, §5.2-6 / T5) ────────────────────────────────
@@ -71,11 +194,6 @@ def load_market(force_sample: bool):
         return df, "샘플(폴백)", f"실데이터 연동 실패 → 샘플로 대체했습니다: {exc}"
 
 
-def _pill(text: str, color: str) -> str:
-    return (f"<span style='background:{color};color:#fff;padding:1px 8px;"
-            f"border-radius:10px;font-size:0.8em;white-space:nowrap'>{text}</span>")
-
-
 # ── 사이드바: 투명성 노출(평가 포인트, §4) ────────────────────────────────
 def render_sidebar(states: dict, source_label: str):
     with st.sidebar:
@@ -109,51 +227,56 @@ def render_sidebar(states: dict, source_label: str):
 def tab_forecast(states: dict):
     g = gluts(states)
     if g:
-        names = ", ".join(f"**{s.item}**(공급 {s.vol_chg:+.0%}·가격 {s.price_chg:+.0%})"
+        names = ", ".join(f"<b>{s.item}</b>(공급 {s.vol_chg:+.0%}·가격 {s.price_chg:+.0%})"
                           for s in g)
-        st.success(f"📢 오늘 **{len(g)}개 품목**이 과잉입니다 — {names}\n\n"
-                   f"공급이 몰려 값이 내렸어요. 지금이 살 때입니다. *(농가 판로에도 도움)*")
+        st.markdown(
+            "<div class='banner'><div class='ic'>📢</div><div>"
+            f"<div class='bt'>오늘 {len(g)}개 품목이 과잉입니다 — {names}</div>"
+            "<div class='bs'>공급이 몰려 값이 내렸어요. "
+            "<b style='color:var(--copper-strong)'>지금이 살 때</b>입니다. "
+            "<span style='opacity:.8'>(농가 판로에도 도움)</span></div></div></div>",
+            unsafe_allow_html=True)
     else:
-        st.info("오늘은 뚜렷한 과잉 품목이 없습니다. 아래 가성비 순위를 참고하세요.")
+        st.markdown(
+            "<div class='banner neutral'><div class='ic'>🧺</div><div>"
+            "<div class='bt'>오늘은 뚜렷한 과잉 품목이 없습니다</div>"
+            "<div class='bs'>아래 가성비 순위를 참고해 장바구니를 채워보세요.</div>"
+            "</div></div>", unsafe_allow_html=True)
 
-    st.markdown("#### 🥬 오늘 사면 좋은 작물 — 가성비 순")
+    sec("🥬 오늘 사면 좋은 작물", "가성비 순")
     picks = sell_first(states, n=6)
     if not picks:
         st.warning("표시할 품목이 없습니다.")
         return
-    cols = st.columns(min(3, len(picks)))
-    for i, s in enumerate(picks):
-        with cols[i % len(cols)]:
-            st.metric(f"{SIG_EMOJI[s.signal]} {s.item}", f"{s.retail:,}원/kg",
-                      delta=f"{s.price_chg:+.0%}", delta_color="inverse")
-            badges = []
-            if s.is_glut:
-                badges.append(_pill("과잉·판로기여", "#6D4C41"))
-            if s.in_season:
-                badges.append(_pill("제철", "#00695C"))
-            badges.append(_pill(s.signal, SIG_COLOR[s.signal]))
-            st.markdown(" ".join(badges), unsafe_allow_html=True)
+    cards = "".join(product_card(s) for s in picks)
+    st.markdown(f"<div class='grid'>{cards}</div>", unsafe_allow_html=True)
 
-    st.divider()
-    c1, c2, c3 = st.columns(3)
-    _signal_list(c1, "🟢 구매추천", [s for s in states.values() if s.signal == SIGNAL_BUY])
-    _signal_list(c2, "🟡 주의(변동성)", [s for s in states.values() if s.signal == SIGNAL_WATCH])
-    _signal_list(c3, "🔴 대기(비쌈)", expensive(states))
+    sec("신호별 한눈에", "지금 사면 좋은 · 변동성 주의 · 대기")
+    buy = [s for s in states.values() if s.signal == SIGNAL_BUY]
+    watch = [s for s in states.values() if s.signal == SIGNAL_WATCH]
+    wait = expensive(states)
+    st.markdown(
+        "<div class='grid3'>"
+        + _signal_list_html("🟢 지금 사면 좋은", buy)
+        + _signal_list_html("🟡 변동성 주의", watch)
+        + _signal_list_html("🔴 대기 (비쌈)", wait)
+        + "</div>", unsafe_allow_html=True)
 
 
-def _signal_list(col, title: str, items: list):
-    with col:
-        st.markdown(f"**{title}**")
-        if not items:
-            st.caption("해당 없음")
-            return
-        for s in sorted(items, key=lambda x: x.price_chg):
-            st.markdown(f"- {s.item} · {s.retail:,}원/kg ({s.price_chg:+.0%})")
+def _signal_list_html(title: str, items: list) -> str:
+    if not items:
+        rows = "<div class='row'><span class='nm' style='color:var(--faint)'>해당 없음</span></div>"
+    else:
+        rows = "".join(
+            f"<div class='row'><span class='nm'>{s.item}</span>"
+            f"<span class='pv'>{s.retail:,}원/kg · {s.price_chg:+.0%}</span></div>"
+            for s in sorted(items, key=lambda x: x.price_chg))
+    return f"<div class='list'><div class='lt'>{title}</div>{rows}</div>"
 
 
 # ── 화면 2: 예산별 장바구니 ───────────────────────────────────────────────
 def tab_budget(states: dict):
-    st.markdown("#### 💰 예산에 맞춘 장바구니 (과잉 우선 · 필수 용도군 보장)")
+    sec("💰 예산에 맞춘 장바구니", "과잉 우선 · 필수 용도군 보장")
     budget = st.slider("예산", min_value=10000, max_value=100000, value=50000,
                        step=5000, format="%d원")
     res = budget_basket(states, budget)
@@ -162,6 +285,14 @@ def tab_budget(states: dict):
         st.warning("이 예산으로 담을 수 있는 품목이 없습니다. 예산을 올려보세요.")
         return
 
+    m1, m2, m3 = st.columns(3)
+    m1.markdown(kpi_html("합계", f"{res['total']:,}원", "var(--copper-strong)"),
+                unsafe_allow_html=True)
+    m2.markdown(kpi_html("잔액", f"{res['leftover']:,}원"), unsafe_allow_html=True)
+    m3.markdown(kpi_html("커버한 용도군", f"{len(res['groups_covered'])}개"),
+                unsafe_allow_html=True)
+
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
     rows = []
     for s, q in res["items"]:
         rows.append({
@@ -176,10 +307,6 @@ def tab_budget(states: dict):
                      "금액": st.column_config.NumberColumn(format="%d 원"),
                  })
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("합계", f"{res['total']:,}원")
-    m2.metric("잔액", f"{res['leftover']:,}원")
-    m3.metric("커버한 용도군", f"{len(res['groups_covered'])}개")
     covered = set(res["groups_covered"])
     missing = [g for g in ESSENTIAL_GROUPS if g not in covered]
     if res["glut_in_basket"] and not missing:
@@ -190,7 +317,7 @@ def tab_budget(states: dict):
 
 # ── 화면 3: 비싸면 대체 ───────────────────────────────────────────────────
 def tab_substitute(states: dict):
-    st.markdown("#### 🔁 비싼 품목 → 같은 용도군 가성비 대체재")
+    sec("🔁 비싸면 대체", "같은 용도군 가성비 대체재")
     pricey = expensive(states)
     options = list(states.keys())   # 실데이터 결측 대비(리스크 #3)
     if not options:
@@ -200,26 +327,38 @@ def tab_substitute(states: dict):
     default = pricey[0].item if pricey else options[0]
     target = st.selectbox("바꾸고 싶은(비싼) 품목", options, index=options.index(default))
     s = states[target]
-    st.markdown(f"**{target}** — {s.retail:,}원/kg "
-                f"({_pill(s.signal, SIG_COLOR[s.signal])} 가격 {s.price_chg:+.0%})",
-                unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='subline'><span class='dot' style='width:9px;height:9px;border-radius:50%;"
+        f"display:inline-block;background:{SIG_COLOR[s.signal]}'></span>"
+        f"<b style='color:var(--text);font-size:1.05rem'>{target}</b> "
+        f"<span style='color:var(--text);font-weight:700'>{s.retail:,}원/kg</span>"
+        f"<span class='chip {SIG_CLASS[s.signal]}'>{s.signal}</span>"
+        f"<span>가격 {s.price_chg:+.0%}</span></div>", unsafe_allow_html=True)
 
     subs = substitutes(states, target)
     if not subs:
         st.info(f"같은 용도군({s.group})에 더 나은 대체재가 없습니다.")
         return
-    st.caption(f"같은 용도군 **{s.group}** 에서 가성비 상위(과잉 우선):")
-    for alt_s in subs:
-        save = s.retail - alt_s.retail
-        save_txt = f" · kg당 {save:,}원 절약" if save > 0 else ""
-        st.markdown(
-            f"- {SIG_EMOJI[alt_s.signal]} **{alt_s.item}** {alt_s.retail:,}원/kg "
-            f"— 사유: _{alt_s.reason()}_{save_txt}")
+    st.markdown(f"<div class='subline'>같은 용도군 <b style='color:var(--text)'>&nbsp;{s.group}&nbsp;</b> "
+                "에서 가성비 상위 (과잉 우선)</div>", unsafe_allow_html=True)
+    cards = ""
+    for a in subs:
+        save = s.retail - a.retail
+        save_txt = (f"<span class='chip buy'>kg당 {save:,}원 절약</span>" if save > 0 else "")
+        cards += (
+            "<div class='card'><div class='head'>"
+            f"<span class='name'><span class='dot' style='background:{SIG_COLOR[a.signal]}'></span>{a.item}</span>"
+            f"{save_txt}</div>"
+            f"<div class='price'>{a.retail:,}<span class='won'>원</span><span class='unit'>/kg</span></div>"
+            f"<div class='chips'><span class='chip {SIG_CLASS[a.signal]}'>{a.signal}</span>"
+            f"<span class='chip season' style='color:var(--muted);background:rgba(255,255,255,.05)'>사유 {a.reason()}</span>"
+            "</div></div>")
+    st.markdown(f"<div class='grid'>{cards}</div>", unsafe_allow_html=True)
 
 
 # ── 화면 4: 살까·기다릴까 (그래프) ────────────────────────────────────────
 def tab_trend(states: dict, df: pd.DataFrame):
-    st.markdown("#### 📈 가격 추세 · 방향 신호")
+    sec("📈 살까·기다릴까", "가격 추세 · 방향 신호")
     options = list(states.keys())
     if not options:
         st.warning("표시할 품목이 없습니다.")
@@ -228,31 +367,56 @@ def tab_trend(states: dict, df: pd.DataFrame):
     s = states[item]
 
     sub = df[df["item"] == item].sort_values("date")
-    line = (alt.Chart(sub).mark_line(color="#B87333")
-            .encode(x=alt.X("date:T", title="일자"),
-                    y=alt.Y("retail:Q", title="소매가(원/kg)",
+    grad = alt.Gradient(
+        gradient="linear", x1=1, x2=1, y1=1, y2=0,
+        stops=[alt.GradientStop(color="rgba(201,138,75,0.02)", offset=0),
+               alt.GradientStop(color="rgba(224,160,90,0.35)", offset=1)])
+    area = (alt.Chart(sub)
+            .mark_area(line={"color": "#E0A05A", "strokeWidth": 2.5}, color=grad,
+                       interpolate="monotone")
+            .encode(x=alt.X("date:T", title=None,
+                            axis=alt.Axis(format="%m/%d", tickCount=6)),
+                    y=alt.Y("retail:Q", title="소매가 (원/kg)",
                             scale=alt.Scale(zero=False)),
-                    tooltip=["date:T", "retail:Q", "volume:Q"])
+                    tooltip=[alt.Tooltip("date:T", title="일자"),
+                             alt.Tooltip("retail:Q", title="소매가", format=","),
+                             alt.Tooltip("volume:Q", title="반입량", format=",.0f")])
             .properties(height=320))
+    chart = (area
+             .configure_view(strokeWidth=0)
+             .configure(background="rgba(0,0,0,0)")
+             .configure_axis(grid=True, gridColor="#ffffff10", domainColor="#ffffff22",
+                             labelColor="#94A6BD", titleColor="#94A6BD",
+                             labelFontSize=12, titleFontSize=12))
     # 신 API(streamlit>=1.43): width="stretch" 사용. use_container_width 는 폐기(리스크 #2)
-    st.altair_chart(line, width="stretch")
+    st.altair_chart(chart, width="stretch")
 
     arrow = {SIGNAL_BUY: "지금이 살 때 ⬇️", SIGNAL_WAIT: "조금 기다리기 ⬆️",
              SIGNAL_WATCH: "변동성 큼 ↕️", SIGNAL_NORMAL: "평소 수준 ➡️"}[s.signal]
     c1, c2 = st.columns([2, 3])
-    c1.metric(f"{SIG_EMOJI[s.signal]} {item}", f"{s.retail:,}원/kg",
-              delta=f"{s.price_chg:+.0%} vs 최근 기준선", delta_color="inverse")
-    c2.markdown(f"### {arrow}")
-    c2.caption(f"반입량 {s.vol_chg:+.0%} · 변동계수 {s.cv:.0%} · "
-               f"기준선=직전 {BASE_MIN}~{BASE_MAX}일 중앙값")
+    c1.markdown(
+        kpi_html(f"{SIG_EMOJI[s.signal]} {item}",
+                 f"{s.retail:,}원/kg", SIG_COLOR[s.signal])
+        + f"<div class='subline' style='margin-top:8px'>가격 {s.price_chg:+.0%} "
+          "<span style='opacity:.7'>vs 최근 기준선</span></div>",
+        unsafe_allow_html=True)
+    c2.markdown(
+        f"<div style='font-size:1.5rem;font-weight:800;color:{SIG_COLOR[s.signal]};"
+        f"margin-top:2px'>{arrow}</div>"
+        f"<div class='subline'>반입량 {s.vol_chg:+.0%} · 변동계수 {s.cv:.0%} · "
+        f"기준선=직전 {BASE_MIN}~{BASE_MAX}일 중앙값</div>", unsafe_allow_html=True)
     st.caption("※ 방향 신호는 최근 추세 기반 **보조 지표**입니다(미래가격 보장 아님).")
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────
 def main():
-    st.title("🛒 장바구니 예보 AI")
-    st.caption("과잉으로 값이 내린 농산물을 **반입량(공급)으로 매일 포착**해 장바구니에 연결합니다. "
-               "*소비자는 가성비, 농민은 판로.*")
+    inject_css()
+    st.markdown(
+        "<div class='hero'>"
+        "<div class='h-title'>🛒 장바구니 예보 <span class='ai'>AI</span></div>"
+        "<div class='h-sub'>과잉으로 값이 내린 농산물을 <b>반입량(공급)으로 매일 포착</b>해 "
+        "장바구니에 연결합니다. <span class='accent'>소비자는 가성비, 농민은 판로.</span></div>"
+        "</div>", unsafe_allow_html=True)
 
     # 1차 로딩(소스 결정 위해 사이드바 토글 먼저 읽기)
     keys = _read_keys()
