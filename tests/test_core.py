@@ -81,6 +81,36 @@ def test_apple_substitute_is_pear(states):
     assert "배" in [s.item for s in subs]   # 같은 과일, 더 저렴
 
 
+def test_substitutes_are_cheaper_than_target(states):
+    """대체재는 항상 대상보다 싸야 한다(가성비 대체의 정의). 더 비싼 품목 금지."""
+    for target in states:
+        ref = states[target].retail
+        for s in substitutes(states, target):
+            assert s.retail < ref, f"{target}({ref}) 대체재 {s.item}({s.retail})가 더 비쌈"
+
+
+def test_substitute_excludes_more_expensive_same_group(states):
+    """싼 품목(배추)의 대체재로 더 비싼 동일군 품목(당근)이 나오면 안 된다."""
+    names = [s.item for s in substitutes(states, "배추")]
+    assert "당근" not in names   # 당근은 배추보다 비쌈 → 가성비 대체 아님
+
+
+def test_sell_first_only_value_picks(states):
+    """가성비 목록은 실제 저렴/과잉(구매추천)만 — 제철이라는 이유만으로 비싼 품목 금지."""
+    picks = sell_first(states)
+    assert all(s.signal == "구매추천" for s in picks)
+    # 비싸고 평탄한 제철 품목(마늘)은 제외돼야 함
+    assert "마늘" not in [s.item for s in picks]
+
+
+def test_budget_boost_only_cheap(states):
+    """예산 증량(q>1)은 실제 저렴(구매추천) 품목에만 적용 — 평탄 제철 증량 금지."""
+    res = budget_basket(states, 50000)
+    for s, q in res["items"]:
+        if q > 1:
+            assert s.signal == "구매추천", f"{s.item}(신호 {s.signal})이 q={q}로 증량됨"
+
+
 def test_budget_basket_constraints(states):
     """예산 5만원: 상한 준수 + 필수 용도군 충족 + 과잉 포함 + 대기 제외."""
     res = budget_basket(states, 50000)

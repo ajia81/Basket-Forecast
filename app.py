@@ -246,7 +246,8 @@ def tab_forecast(states: dict):
     sec("🥬 오늘 사면 좋은 작물", "가성비 순")
     picks = sell_first(states, n=6)
     if not picks:
-        st.warning("표시할 품목이 없습니다.")
+        st.info("오늘은 특별히 저렴하거나 과잉인 품목이 없습니다. "
+                "필요한 품목은 '살까·기다릴까'에서 추세를 확인하세요.")
         return
     cards = "".join(product_card(s) for s in picks)
     st.markdown(f"<div class='grid'>{cards}</div>", unsafe_allow_html=True)
@@ -319,12 +320,15 @@ def tab_budget(states: dict):
 def tab_substitute(states: dict):
     sec("🔁 비싸면 대체", "같은 용도군 가성비 대체재")
     pricey = expensive(states)
-    options = list(states.keys())   # 실데이터 결측 대비(리스크 #3)
-    if not options:
+    if not states:
         st.warning("표시할 품목이 없습니다.")
         return
+    # 비싸진(가격 상승) 순으로 정렬해 '바꿀 만한' 품목을 위에(리스크 #3: states.keys() 파생)
+    options = sorted(states.keys(), key=lambda k: states[k].price_chg, reverse=True)
+    if not pricey:
+        st.caption("오늘은 '대기(비싼)' 품목이 없습니다 — 가격이 가장 오른 품목을 기본 선택했습니다.")
 
-    default = pricey[0].item if pricey else options[0]
+    default = options[0]   # 가격 변화율 최대(가장 비싸진) 품목
     target = st.selectbox("바꾸고 싶은(비싼) 품목", options, index=options.index(default))
     s = states[target]
     st.markdown(

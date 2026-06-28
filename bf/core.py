@@ -169,19 +169,30 @@ def gluts(states: dict[str, ItemState]) -> list[ItemState]:
 
 
 def sell_first(states: dict[str, ItemState], n: int = 6) -> list[ItemState]:
-    """'오늘 팔아줄 작물' — 과잉·제철·저렴 우선(value순). 대기 품목 제외."""
-    pool = [s for s in states.values() if s.signal != SIGNAL_WAIT]
+    """'오늘 사면 좋은 작물' — **실제 저렴/과잉(구매추천)만**, 가성비(value)순.
+
+    제철·보통이라는 이유만으로는 포함하지 않는다(가성비 목록 신뢰성). 즉 풀 =
+    signal==구매추천(=과잉 또는 가격 ≤ -10%). 없으면 빈 리스트(UI가 안내).
+    """
+    pool = [s for s in states.values() if s.signal == SIGNAL_BUY]
     return sorted(pool, key=lambda s: (s.is_glut, s.value), reverse=True)[:n]
 
 
 def substitutes(states: dict[str, ItemState], item: str, n: int = 3) -> list[ItemState]:
-    """같은 용도군의 가성비 상위 대체재(과잉 우선). 자기 자신·대기 제외."""
-    group = states[item].group if item in states else (
-        ITEMS[item].group if item in ITEMS else None)
+    """같은 용도군에서 **대상보다 더 싼** 가성비 대체재(과잉 우선).
+
+    자기 자신·대기(비쌈)·**대상보다 비싸거나 같은** 품목은 제외한다 — 대체재는
+    반드시 절약이 되어야 한다(가성비 대체의 정의). 동률은 과잉 우선·value순.
+    """
+    target = states.get(item) or (
+        ITEMS[item] if item in ITEMS else None)  # type: ignore[assignment]
+    group = getattr(target, "group", None)
     if group is None:
         return []
+    ref = states[item].retail if item in states else None  # 비교 기준가(원/kg)
     pool = [s for s in states.values()
-            if s.group == group and s.item != item and s.signal != SIGNAL_WAIT]
+            if s.group == group and s.item != item and s.signal != SIGNAL_WAIT
+            and (ref is None or s.retail < ref)]
     return sorted(pool, key=lambda s: (s.is_glut, s.value), reverse=True)[:n]
 
 
@@ -231,9 +242,10 @@ def budget_basket(states: dict[str, ItemState], budget: int) -> dict:
             spent += s.portion_cost
             covered.add(s.group)
 
-    # ③ 잔여예산: 과잉·제철 품목 수량 증가(MAXQ 상한), 효율순 반복
+    # ③ 잔여예산: **실제 저렴(구매추천=과잉/할인) 품목만** 수량 증가(MAXQ 상한).
+    #    평탄가 제철 품목(예: 마늘 -1%)을 단지 제철이라는 이유로 증량하지 않는다.
     boost = sorted((s for s in candidates
-                    if s.item in basket and (s.is_glut or s.in_season)),
+                    if s.item in basket and s.signal == SIGNAL_BUY),
                    key=_eff, reverse=True)
     changed = True
     while changed:
