@@ -1,10 +1,10 @@
-# 테마: 네이비 + 카퍼 (명세서 §1.2)
+# 테마: 라이트 + 그린 (standalone 디자인 기준)
 [theme]
-base = "dark"
-primaryColor = "#B87333"            # 카퍼(강조)
-backgroundColor = "#0E1A2B"         # 네이비(배경)
-secondaryBackgroundColor = "#14233A"
-textColor = "#E8EDF2"
+base = "light"
+primaryColor = "#1F8F4E"            # 그린(강조)
+backgroundColor = "#F6F8F3"         # 라이트 세이지(본문 배경)
+secondaryBackgroundColor = "#FFFFFF"  # 사이드바·위젯 표면
+textColor = "#111E18"
 font = "sans serif"
 
 [server]
