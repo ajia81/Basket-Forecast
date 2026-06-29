@@ -107,6 +107,19 @@ def test_merge_normalize_outputs_schema():
     assert out["retail"].dtype.kind in "iu"   # 정수 원/kg
 
 
+def test_merge_normalize_wholesale_all_nan_falls_back_to_retail():
+    # 도매가가 전무한 품목(배추 중도매 미조사 재현) → 소매가로 대체, int 변환 안 깨짐
+    price = pd.DataFrame({
+        "date": pd.to_datetime(["2025-11-10", "2025-11-11"]),
+        "item": ["배추", "배추"], "retail": [1500, 1600],
+        "wholesale": [float("nan"), float("nan")],
+    })
+    out = _merge_normalize(price, pd.DataFrame(columns=["date", "item", "volume"]))
+    assert list(out.columns) == SCHEMA
+    assert out["wholesale"].notna().all()
+    assert out["wholesale"].tolist() == [1500, 1600]   # 소매가로 대체
+
+
 def test_merge_normalize_missing_volume_neutral():
     price = pd.DataFrame({
         "date": pd.to_datetime(["2025-11-10"]),

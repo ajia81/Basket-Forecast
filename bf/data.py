@@ -520,6 +520,9 @@ def _merge_normalize(price_df: pd.DataFrame, volume_df: pd.DataFrame) -> pd.Data
     # 반입량 전무하면 중립값(과잉 신호는 0으로 자연 비활성)
     df["volume"] = df["volume"].fillna(100.0)
     df = df.dropna(subset=["retail"])
+    # 도매가가 전무한 품목(예: 배추 중도매 미조사)은 소매가로 대체 — 보간으로도 못
+    # 채운 NaN 이 남으면 int 변환이 깨져(IntCastingNaNError) 전체가 폴백된다(가드).
+    df["wholesale"] = df["wholesale"].fillna(df["retail"])
 
     df["item"] = df["item"].astype(str)
     df["retail"] = df["retail"].round().astype(int)
