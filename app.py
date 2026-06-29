@@ -339,7 +339,7 @@ def render_sidebar(states: dict, source_label: str):
             "<div class='sb-metric'><div class='ml'>오늘 과잉 포착</div>"
             f"<div class='mv'>{len(g)} <span>품목</span></div>"
             f"<div class='ms'>{names}</div></div>", unsafe_allow_html=True)
-        st.markdown("<p class='sb-foot'>SUHO AI Works · 소비자는 가성비, 농민은 판로</p>",
+        st.markdown("<p class='sb-foot'>소비자는 가성비, 농민은 판로</p>",
                     unsafe_allow_html=True)
     return force_sample
 
