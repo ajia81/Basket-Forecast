@@ -13,7 +13,7 @@ from bf.catalog import (
 )
 from bf.data import (
     _parse_kamis_xml, _merge_normalize, _parse_volume_records, _collect_volume,
-    _extract_items, VOL_FIELD_DATE, VOL_FIELD_CODE, VOL_FIELD_QTY,
+    _extract_items, VOL_FIELD_DATE, VOL_FIELD_LCLSF, VOL_FIELD_MCLSF, VOL_FIELD_QTY,
 )
 
 
@@ -117,37 +117,38 @@ def test_merge_normalize_missing_volume_neutral():
     assert out["volume"].notna().all()   # 반입량 전무 → 중립값 채움
 
 
-# ── 도매 품목표준코드 매핑 (§5.2-3) ───────────────────────────────────────
+# ── 경매 (대분류,중분류) 코드 매핑 (§5.2-3) ───────────────────────────────
 def test_wholesale_index_roundtrip():
     fixture = {
         "양파": ItemMeta("양파", GROUP_SEASONING, 1.0, frozenset({5}), 2000, 39,
-                        wholesale_code="0601"),
+                        vol_lclsf="12", vol_mclsf="01"),
         "대파": ItemMeta("대파", GROUP_SEASONING, 0.5, frozenset({12}), 4000, 33,
-                        wholesale_code="0602"),
+                        vol_lclsf="12", vol_mclsf="02"),
     }
     idx = build_wholesale_index(fixture)
-    assert idx == {"0601": "양파", "0602": "대파"}
+    assert idx == {("12", "01"): "양파", ("12", "02"): "대파"}
 
 
-# ── 반입량 파싱: 코드매핑 + 일별 합산 + 미등록 코드 가드 ────────────────────
+# ── 반입량 파싱: (대분류,중분류) 매핑 + 일별 합산 + 미등록 코드 가드 ─────────
 def test_parse_volume_records_maps_aggregates_and_guards():
+    L, M = VOL_FIELD_LCLSF, VOL_FIELD_MCLSF
     recs = [
-        {VOL_FIELD_DATE: "2025-11-10", VOL_FIELD_CODE: "0601", VOL_FIELD_QTY: "1,200"},
-        {VOL_FIELD_DATE: "2025-11-10", VOL_FIELD_CODE: "0601", VOL_FIELD_QTY: "800"},
-        {VOL_FIELD_DATE: "2025-11-10", VOL_FIELD_CODE: "9999", VOL_FIELD_QTY: "50"},  # 미등록→스킵
-        {VOL_FIELD_DATE: "20251111", VOL_FIELD_CODE: "0601", VOL_FIELD_QTY: "500"},   # YYYYMMDD
+        {VOL_FIELD_DATE: "2025-11-10", L: "12", M: "01", VOL_FIELD_QTY: "1,200"},
+        {VOL_FIELD_DATE: "2025-11-10", L: "12", M: "01", VOL_FIELD_QTY: "800"},
+        {VOL_FIELD_DATE: "2025-11-10", L: "05", M: "01", VOL_FIELD_QTY: "50"},   # 미등록쌍→스킵
+        {VOL_FIELD_DATE: "20251111", L: "12", M: "01", VOL_FIELD_QTY: "500"},    # YYYYMMDD
     ]
-    out = _parse_volume_records(recs, {"0601": "양파"})
+    out = _parse_volume_records(recs, {("12", "01"): "양파"})
     assert list(out.columns) == ["date", "item", "volume"]
     day10 = out[out["date"] == pd.Timestamp("2025-11-10")]
     assert day10["volume"].iloc[0] == pytest.approx(2000.0)   # 1200+800 합산
-    assert (out["item"] == "양파").all()                       # 미등록 코드 제외
+    assert (out["item"] == "양파").all()                       # 미등록 코드쌍 제외(중분류 01 충돌 방지)
     assert pd.Timestamp("2025-11-11") in set(out["date"])      # YYYYMMDD 파싱
 
 
-def test_collect_volume_empty_when_no_codes_registered():
-    # 현재 catalog 에 wholesale_code 미등록 → 키가 있어도 빈 프레임(가격만으로 동작)
-    out = _collect_volume({"data_go_kr": "x"}, pd.Timestamp("2025-11-01"),
+def test_collect_volume_empty_when_no_key():
+    # data_go_kr 키 없으면 빈 프레임(가격만으로 동작) — 네트워크 미호출
+    out = _collect_volume({}, pd.Timestamp("2025-11-01"),
                           pd.Timestamp("2025-11-10"), session=None)
     assert list(out.columns) == ["date", "item", "volume"]
     assert out.empty
@@ -155,11 +156,11 @@ def test_collect_volume_empty_when_no_codes_registered():
 
 def test_extract_items_json_and_xml():
     payload = {"response": {"body": {"items": {"item": [
-        {VOL_FIELD_CODE: "0601", VOL_FIELD_QTY: "10"}]}}}}
+        {VOL_FIELD_MCLSF: "01", VOL_FIELD_QTY: "10"}]}}}}
     assert _extract_items(_FakeResp(payload=payload))[0][VOL_FIELD_QTY] == "10"
-    xml = f"<r><item><{VOL_FIELD_CODE}>0601</{VOL_FIELD_CODE}>" \
+    xml = f"<r><item><{VOL_FIELD_MCLSF}>01</{VOL_FIELD_MCLSF}>" \
           f"<{VOL_FIELD_QTY}>10</{VOL_FIELD_QTY}></item></r>"
-    assert _extract_items(_FakeResp(text=xml))[0][VOL_FIELD_CODE] == "0601"
+    assert _extract_items(_FakeResp(text=xml))[0][VOL_FIELD_MCLSF] == "01"
 
 
 # ── KAMIS 코드 검증 헬퍼 (§5.2-1) ─────────────────────────────────────────
@@ -191,6 +192,60 @@ def test_verify_catalog_codes_probes_live_when_coded(monkeypatch):
     assert report["사과"]["ok"] is True
     assert report["사과"]["rows"] == 1
     assert len(fake.calls) == 1
+
+
+# ── ② 가격(perRegion) 파싱: 평균가 → 원/kg 단위정규화 + 결측/0 가드 ──────────
+def test_parse_price_records_normalizes_avg_to_kg():
+    from bf.data import (_parse_price_records, PRICE_FIELD_DATE, PRICE_FIELD_AVG,
+                         PRICE_FIELD_UNIT, PRICE_FIELD_UNITSZ)
+    # 사과: 10개 × 0.25kg = 2.5kg. 25000원 → 10000원/kg, 20000원 → 8000원/kg → 평균 9000
+    recs = [
+        {PRICE_FIELD_DATE: "20260601", PRICE_FIELD_AVG: "25,000",
+         PRICE_FIELD_UNIT: "개", PRICE_FIELD_UNITSZ: "10"},
+        {PRICE_FIELD_DATE: "20260601", PRICE_FIELD_AVG: "20000",
+         PRICE_FIELD_UNIT: "개", PRICE_FIELD_UNITSZ: "10"},
+        {PRICE_FIELD_DATE: "20260602", PRICE_FIELD_AVG: "0",
+         PRICE_FIELD_UNIT: "개", PRICE_FIELD_UNITSZ: "10"},       # 0 → 제외
+        {PRICE_FIELD_DATE: "20260603", PRICE_FIELD_AVG: "9999",
+         PRICE_FIELD_UNIT: "자루", PRICE_FIELD_UNITSZ: "1"},      # 미등록 단위 → 제외
+    ]
+    out = pd.DataFrame(_parse_price_records(recs, "사과"))
+    assert set(out["item"]) == {"사과"}
+    v = out[out["date"] == pd.Timestamp("2026-06-01")]["price"].iloc[0]
+    assert v == 9000
+    assert pd.Timestamp("2026-06-02") not in set(out["date"])   # 0가 → 제외
+    assert pd.Timestamp("2026-06-03") not in set(out["date"])   # 미등록 단위 → 제외
+
+
+# 시금치 g/100 환산: 886원/100g → 8860원/kg (실데이터 단위 케이스 회귀)
+def test_parse_price_records_grams_to_kg():
+    from bf.data import (_parse_price_records, PRICE_FIELD_DATE, PRICE_FIELD_AVG,
+                         PRICE_FIELD_UNIT, PRICE_FIELD_UNITSZ)
+    recs = [{PRICE_FIELD_DATE: "20260601", PRICE_FIELD_AVG: "886",
+             PRICE_FIELD_UNIT: "g", PRICE_FIELD_UNITSZ: "100"}]
+    out = _parse_price_records(recs, "시금치")
+    assert out[0]["price"] == 8860                       # 886 ÷ (100 × 0.001kg)
+
+
+# ── ① 반입량: qty × unit_qty(단위물량) 으로 kg 물량 집계 ───────────────────
+def test_parse_volume_multiplies_unit_qty():
+    from bf.data import VOL_FIELD_UNITQTY
+    L, M = VOL_FIELD_LCLSF, VOL_FIELD_MCLSF
+    recs = [
+        {VOL_FIELD_DATE: "2025-11-10", L: "12", M: "01",
+         VOL_FIELD_QTY: "3", VOL_FIELD_UNITQTY: "10"},     # 3 × 10kg = 30
+        {VOL_FIELD_DATE: "2025-11-10", L: "12", M: "01",
+         VOL_FIELD_QTY: "2", VOL_FIELD_UNITQTY: "5"},       # 2 × 5kg = 10
+    ]
+    out = _parse_volume_records(recs, {("12", "01"): "양파"})
+    assert out["volume"].iloc[0] == pytest.approx(40.0)     # 30 + 10 합산
+
+
+def test_catalog_items_have_all_codes():
+    from bf.catalog import ITEMS
+    # 10개 품목 모두 가격 코드 + 경매 (대분류,중분류) 코드가 채워져 실연동 가능해야 함
+    assert all(m.price_ctgry and m.price_item for m in ITEMS.values())
+    assert all(m.vol_lclsf and m.vol_mclsf for m in ITEMS.values())
 
 
 def test_sample_passes_schema_validation():

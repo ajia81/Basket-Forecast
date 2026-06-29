@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .catalog import ITEMS, normalize_price, build_wholesale_index
+from .catalog import ITEMS, normalize_price, unit_to_kg, build_wholesale_index
 
 SCHEMA = ["date", "item", "retail", "wholesale", "volume"]
 _RECENT_DAYS = 7   # §3.1 '현재' 창과 동일 — 샘플 스토리를 최근 7일에 주입
@@ -94,66 +94,142 @@ def _load_sample(end=None, days: int = 90, seed: int = 42) -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-#  실연동 (§5) — KAMIS 가격 + 도매 반입량 → 원/kg 정규화 → §2 스키마
-#  · 네트워크 호출부와 파싱/정규화부를 분리해 파싱·정규화를 픽스처로 테스트한다(§5.3).
-#  · 엔드포인트/파라미터/코드값은 현행 공식 문서로 확인(임의 추정 금지, §5.1 주의).
+#  실연동 (§5) — data.go.kr B552845(aT) 3종 → 원/kg 정규화 → §2 스키마
+#  · 가격(②): perRegion/price — 조사일'환산'평균가격(원/kg) 제공(리스크 #6 해소).
+#  · 반입량(①): katRealTime2/trades2 — 일자별 경매 수량×단위물량 → 일 반입량.
+#  · 코드(③): katCode/goods — 품목명↔상품중분류코드 런타임 해석(반입량 필터용).
+#  · 인증은 data.go.kr serviceKey 1개(=keys["data_go_kr"]). KAMIS 직통키는 선택.
+#  · 네트워크 호출부와 파싱부를 분리해 파싱을 픽스처로 테스트한다(§5.3).
+#  · 모든 엔드포인트/필드명은 동봉 공식 API 명세서(xlsx)로 확정(임의 추정 금지).
+#  ⚠️ data.go.kr 키는 **Decoding(일반 인증키)** 을 사용한다 — requests 가 파라미터를
+#     재인코딩하므로 Encoding 키를 넣으면 이중 인코딩으로 인증 실패한다.
 # ══════════════════════════════════════════════════════════════════════════
+# (legacy) KAMIS 직통 — verify_catalog_codes 코드 점검에만 사용.
 KAMIS_PRICE_URL = "https://www.kamis.or.kr/service/price/xml.do?action=periodProductList"
-# data.go.kr 도매시장 반입량 계열(B552895 등) — 운영자가 현행 엔드포인트로 교체.
-WHOLESALE_VOLUME_URL = "https://apis.data.go.kr/B552895/..."
+
+# ② 지역별 품목별 도·소매 가격정보 (서비스 perRegion / 오퍼레이션 price)
+PRICE_URL = "https://apis.data.go.kr/B552845/perRegion/price"
+PRICE_SE_RETAIL = "01"        # 구분코드: 소매
+PRICE_SE_WHOLESALE = "02"     # 구분코드: 중도매
+PRICE_SGG_DEFAULT = "1101"    # 시군구코드(필수): 서울 — 농산물은 전국코드 미지원
+PRICE_GRADE_DEFAULT = "04"    # 등급코드: 상품(대표 소비등급)
+PRICE_FIELD_DATE = "exmn_ymd"               # 조사일자(YYYYMMDD)
+PRICE_FIELD_AVG = "exmn_dd_avg_prc"         # 조사일평균가격(원/조사단위) — 단위정규화 입력
+PRICE_FIELD_UNIT = "unit"                   # 단위(kg/개/포기/g …)
+PRICE_FIELD_UNITSZ = "unit_sz"              # 단위크기(배수: 10개·100g 등)
+PRICE_FIELD_CNVS_AVG = "exmn_dd_cnvs_avg_prc"  # 조사일'환산'가 — 단위가 품목별 상이(verify용)
 
 
 def load_from_api(keys: dict, end=None, days: int = 90) -> pd.DataFrame:
     """실API → §2 스키마. 키는 dict 주입(secrets 비의존).
 
-    keys = {"kamis_cert_key":…, "kamis_cert_id":…, "data_go_kr":…}
+    keys = {"data_go_kr": …}  (필수)  ·  KAMIS 직통키는 선택.
+    가격(②)은 항상 수집. 반입량(①)은 코드 해석·네트워크 성공 시에만 합류하고
+    실패하면 빈 프레임 → 가격만으로 동작(과잉 신호만 자연 비활성).
     """
     import requests  # 지연 import — 테스트/샘플 경로에서 불필요
 
     end = (pd.Timestamp(end) if end is not None else pd.Timestamp.today()).normalize()
     start = end - pd.Timedelta(days=days - 1)
 
-    price_df = _collect_kamis_prices(keys, start, end, session=requests)
-    volume_df = _collect_volume(keys, start, end, session=requests)
+    price_df = _collect_prices(keys, start, end, session=requests)
+    if ENABLE_WHOLESALE_VOLUME:
+        volume_df = _collect_volume(keys, start, end, session=requests)
+    else:
+        volume_df = pd.DataFrame(columns=["date", "item", "volume"])
     return _merge_normalize(price_df, volume_df)
 
 
-def _collect_kamis_prices(keys: dict, start, end, session) -> pd.DataFrame:
-    """KAMIS 기간조회로 소매(01)·도매(02) 일별가 수집 → [date,item,retail,wholesale].
+def _collect_prices(keys: dict, start, end, session) -> pd.DataFrame:
+    """perRegion/price 로 소매(01)·중도매(02) 일별 환산가(원/kg) 수집.
 
-    가격은 품목별 단위가 상이하므로 normalize_price()로 **원/kg 환산**(리스크 #6).
+    반환 [date,item,retail,wholesale]. 환산평균가격은 데이터셋이 kg 기준으로
+    제공하므로 추가 단위환산 불필요(리스크 #6 해소). 품목당 품종/지역 다건은
+    _parse_price_records 가 일자별 평균으로 합친다.
     """
-    cert_key = keys.get("kamis_cert_key")
-    cert_id = keys.get("kamis_cert_id")
-    if not (cert_key and cert_id):
-        raise ValueError("KAMIS 키 누락: kamis_cert_key / kamis_cert_id (§5.2-5)")
+    if not keys.get("data_go_kr"):
+        raise ValueError("data.go.kr 키 누락: data_go_kr (§5.2-5)")
 
     frames: list[pd.DataFrame] = []
-    for cls_code, col in (("01", "retail"), ("02", "wholesale")):
+    for se_code, col in ((PRICE_SE_RETAIL, "retail"), (PRICE_SE_WHOLESALE, "wholesale")):
         recs: list[dict] = []
         for item, meta in ITEMS.items():
-            if not meta.kamis_item:
-                # 코드 미등록 — 공식 코드조회 API에서 취득 후 catalog 채울 것(§5.2-1)
-                raise ValueError(
-                    f"'{item}' KAMIS 코드 미등록. 공식 코드조회로 catalog 를 먼저 채우세요.")
-            params = {
-                "p_cert_key": cert_key, "p_cert_id": cert_id, "p_returntype": "xml",
-                "p_startday": start.strftime("%Y-%m-%d"),
-                "p_endday": end.strftime("%Y-%m-%d"),
-                "p_product_cls_code": cls_code,
-                "p_item_category_code": meta.kamis_category or "",
-                "p_itemcode": meta.kamis_item,
-            }
-            resp = session.get(KAMIS_PRICE_URL, params=params, timeout=10)
-            resp.raise_for_status()
-            recs.extend(_parse_kamis_xml(resp.text, item))
-        frames.append(pd.DataFrame(recs).rename(columns={"price": col}))
+            if not (meta.price_ctgry and meta.price_item):
+                continue   # 가격 코드 미등록 품목 스킵(가드)
+            records = _fetch_price_records(keys, meta, se_code, start, end, session)
+            recs.extend(_parse_price_records(records, item))
+        frames.append(pd.DataFrame(recs, columns=["date", "item", "price"])
+                      .rename(columns={"price": col}))
 
     retail_df, whole_df = frames
     if retail_df.empty and whole_df.empty:
         return pd.DataFrame(columns=["date", "item", "retail", "wholesale"])
-    out = pd.merge(retail_df, whole_df, on=["date", "item"], how="outer")
+    return pd.merge(retail_df, whole_df, on=["date", "item"], how="outer")
+
+
+def _fetch_price_records(keys: dict, meta, se_code: str, start, end, session) -> list[dict]:
+    """perRegion/price 단일 (품목·구분) 기간조회 → item dict 리스트(페이지 합본).
+
+    필터(cond[...]): 조사일자 범위(GTE/LTE) · 부류 · 품목 · 구분 · 시군구 · 등급.
+    """
+    out: list[dict] = []
+    page = 1
+    while True:
+        params = {
+            "serviceKey": keys["data_go_kr"], "returnType": "json",
+            "numOfRows": 1000, "pageNo": page,
+            "cond[exmn_ymd::GTE]": start.strftime("%Y%m%d"),
+            "cond[exmn_ymd::LTE]": end.strftime("%Y%m%d"),
+            "cond[ctgry_cd::EQ]": meta.price_ctgry,
+            "cond[item_cd::EQ]": meta.price_item,
+            "cond[se_cd::EQ]": se_code,
+            "cond[sgg_cd::EQ]": PRICE_SGG_DEFAULT,
+            "cond[grd_cd::EQ]": PRICE_GRADE_DEFAULT,
+        }
+        if meta.price_vrty:   # 이질 품종 혼입 방지(예: 대파에서 쪽파 제외)
+            params["cond[vrty_cd::EQ]"] = meta.price_vrty
+        resp = session.get(PRICE_URL, params=params, timeout=10)
+        resp.raise_for_status()
+        items = _extract_items(resp)
+        out.extend(items)
+        if len(items) < 1000 or page >= 20:   # 안전 상한
+            break
+        page += 1
     return out
+
+
+def _parse_price_records(records, item: str) -> list[dict]:
+    """perRegion 응답 → [{date,item,price(원/kg)}]. 평균가를 **원/kg 정규화**.
+
+    perRegion 의 환산가(cnvs)는 품목별 환산단위가 달라(kg/포기/개/10개…) 직접
+    쓰면 안 된다. 대신 평균가(avg, 원/조사단위)를 단위로 나눠 원/kg 로 환산한다:
+        원/kg = avg ÷ (unit_sz × unit_to_kg(item, unit))      # 리스크 #6
+    같은 날 여러 품종/지역 행은 원/kg 산술평균으로 합친다. 단위 미매핑·0·결측은
+    제외(조용히 버리지 말고 운영 시 로깅 권장).
+    """
+    acc: dict = {}
+    for rec in records:
+        date = _parse_date(str(rec.get(PRICE_FIELD_DATE) or ""))
+        if date is None:
+            continue
+        try:
+            price = float(str(rec.get(PRICE_FIELD_AVG) or "").replace(",", "").strip())
+            usz_raw = str(rec.get(PRICE_FIELD_UNITSZ) or "").replace(",", "").strip()
+            unit_sz = float(usz_raw) if usz_raw else 1.0
+        except ValueError:
+            continue
+        if price <= 0 or unit_sz <= 0:
+            continue
+        unit = str(rec.get(PRICE_FIELD_UNIT) or "kg").strip() or "kg"
+        try:
+            kg = unit_sz * unit_to_kg(item, unit)
+        except KeyError:
+            continue   # 단위 환산표 미등록 — 추정 금지(스킵, 운영 시 로깅 권장)
+        if kg <= 0:
+            continue
+        acc.setdefault(date, []).append(price / kg)
+    return [{"date": d, "item": item, "price": round(sum(v) / len(v))}
+            for d, v in acc.items()]
 
 
 def _parse_kamis_xml(xml_text: str, item: str) -> list[dict]:
@@ -204,59 +280,68 @@ def _parse_date(s: str):
         return None
 
 
-# ── 도매시장 반입량 응답 필드명 (data.go.kr B552895, §5.2-3) ───────────────
-#  공식 코드사전에서 확인된 표준 코드 필드: whsl_mrkt_cd(도매시장), gds_lclsf_cd/
-#  gds_mclsf_cd/gds_sclsf_cd(품목 대/중/소분류), unit_cd(단위), plor_cd(산지).
-#  ⚠️ 아래 4개 필드명·오퍼레이션은 **현행 기관 API 명세서로 확정**한다(임의 추정 금지).
-#     틀린 값이 비즈니스 로직에 묻히지 않도록 *명명된 단일 상수*로 노출했다 —
-#     운영자는 명세서를 보고 이 네 줄만 확인/수정하면 된다. 미확정(_UNSET) 상태면
-#     _collect_volume 이 빈 프레임을 반환해 가격만으로 앱이 동작한다(반입량 선택적).
-_VOLUME_OP_UNSET = "...operation...(명세서로 확정)"
-VOLUME_OPERATION = _VOLUME_OP_UNSET   # 예: OrgPriceRealtimeService/getRealtimeAuctionList
-VOL_FIELD_DATE = "saledate"     # 거래/반입 일자
-VOL_FIELD_CODE = "gds_mclsf_cd"  # 품목 코드(중분류=품목) ↔ catalog.wholesale_code
-VOL_FIELD_QTY = "delng_qy"      # 거래물량(반입량 프록시 — 별도 반입량 필드 있으면 교체)
+# ── ① 전국 공영도매시장 실시간 경매정보 (서비스 katRealTime2 / 오퍼레이션 trades2) ──
+#  응답 코드/수량 필드(공식 명세): gds_lclsf_cd/gds_mclsf_cd/gds_sclsf_cd(품목 대/중/소
+#  분류), whsl_mrkt_cd(도매시장), unit_cd(단위), qty(수량), unit_qty(단위물량).
+#  일 반입량 ≈ Σ(qty × unit_qty). 품목은 (대분류,중분류) 쌍으로 식별한다(중분류코드는
+#  대분류 안에서만 유일 — 단일 코드로 조회하면 타품목이 섞임). 거래정산일자는 EQ·필수.
+WHOLESALE_VOLUME_URL = "https://apis.data.go.kr/B552845/katRealTime2"
+VOLUME_OPERATION = "trades2"
+VOL_FIELD_DATE = "trd_clcln_ymd"   # 거래정산일자(YYYY-MM-DD)
+VOL_FIELD_LCLSF = "gds_lclsf_cd"   # 상품대분류코드 (품목 식별 1)
+VOL_FIELD_MCLSF = "gds_mclsf_cd"   # 상품중분류코드 (품목 식별 2)
+VOL_FIELD_QTY = "qty"              # 수량(낙찰 단위 수)
+VOL_FIELD_UNITQTY = "unit_qty"     # 단위물량(단위당 kg 등) — qty×unit_qty=물량
+#  반입량 합류 스위치(기본 OFF). trades2 는 (품목×일자)별 조회이고 품목당 일 1,000건
+#  초과(다중 페이지)라, 60일 기준선을 라이브로 모으면 수천 콜 → 개발쿼터(10,000/일)·
+#  로딩 지연이 비현실적. True 로 켜면 실 반입량으로 '과잉' 신호까지 동작하지만 첫 로딩이
+#  느리고 쿼터를 크게 쓴다(운영은 야간 배치 누적 권장). OFF 면 실가격만으로 동작.
+ENABLE_WHOLESALE_VOLUME = False
 
 
-def _collect_volume(keys: dict, start, end, session) -> pd.DataFrame:
-    """도매시장 API → [date,item,volume]. 품목표준코드로 매핑(§5.2-3).
+def _collect_volume(keys: dict, start, end, session, index=None) -> pd.DataFrame:
+    """경매 API → [date,item,volume]. (대분류,중분류) 쌍으로 품목 매핑(§5.2-3).
 
-    빈 프레임 반환(가격만으로 앱 동작) 조건:
-      · data_go_kr 키 없음
-      · catalog 에 wholesale_code 미등록(공식 코드조회로 채우기 전)
-      · VOLUME_OPERATION 미확정(_VOLUME_OP_UNSET — 운영자가 명세서로 확정 전)
-    네트워크 호출부는 _fetch_volume_records, 파싱/정규화는 _parse_volume_records 로
-    분리해 후자를 픽스처로 테스트한다(§5.3).
+    빈 프레임 반환(가격만으로 앱 동작) 조건: data_go_kr 키 없음 · catalog 에 경매
+    코드(vol_lclsf/vol_mclsf) 미등록. 네트워크 호출부 _fetch_volume_records, 파싱부
+    _parse_volume_records 로 분리해 후자를 픽스처로 테스트한다(§5.3).
     """
     if not keys.get("data_go_kr"):
         return pd.DataFrame(columns=["date", "item", "volume"])
-    index = build_wholesale_index()
-    if not index:
+    idx = index if index is not None else build_wholesale_index()
+    if not idx:
         return pd.DataFrame(columns=["date", "item", "volume"])  # 코드 미등록
-    if VOLUME_OPERATION == _VOLUME_OP_UNSET:
-        return pd.DataFrame(columns=["date", "item", "volume"])  # 엔드포인트 미확정
-    records = _fetch_volume_records(keys, start, end, session)
-    return _parse_volume_records(records, index)
+    records = _fetch_volume_records(keys, start, end, session, idx)
+    return _parse_volume_records(records, idx)
 
 
-def _fetch_volume_records(keys: dict, start, end, session) -> list[dict]:
-    """도매시장 OpenAPI 호출 → 레코드 dict 리스트(JSON/XML 공통 형태).
+def _fetch_volume_records(keys: dict, start, end, session, index) -> list[dict]:
+    """trades2 호출 → 레코드 dict 리스트. (대분류,중분류)×일자 루프(정산일자 EQ·필수).
 
-    ⚠️ 파라미터명/오퍼레이션/페이지네이션은 현행 명세서로 확정(§5.1). 등록된
-    품목표준코드만 조회하고, 응답을 [{필드:값}, …] 평면 dict 리스트로 돌려준다.
+    index 키는 (gds_lclsf_cd, gds_mclsf_cd) 쌍. 기간 내 각 일자를 두 코드로 필터해
+    조회하고 응답을 [{필드:값}, …] 평면 dict 리스트로 합본해 돌려준다.
     """
     base = f"{WHOLESALE_VOLUME_URL.rstrip('/')}/{VOLUME_OPERATION}"
     records: list[dict] = []
-    for code in build_wholesale_index():
-        params = {
-            "serviceKey": keys["data_go_kr"], "_type": "json",
-            "saleDate_start": start.strftime("%Y-%m-%d"),
-            "saleDate_end": end.strftime("%Y-%m-%d"),
-            VOL_FIELD_CODE: code, "numOfRows": 1000, "pageNo": 1,
-        }
-        resp = session.get(base, params=params, timeout=10)
-        resp.raise_for_status()
-        records.extend(_extract_items(resp))
+    days = pd.date_range(start, end, freq="D")
+    for lclsf, mclsf in index:
+        for day in days:
+            page = 1
+            while True:
+                params = {
+                    "serviceKey": keys["data_go_kr"], "returnType": "json",
+                    "numOfRows": 1000, "pageNo": page,
+                    "cond[trd_clcln_ymd::EQ]": day.strftime("%Y-%m-%d"),
+                    f"cond[{VOL_FIELD_LCLSF}::EQ]": lclsf,
+                    f"cond[{VOL_FIELD_MCLSF}::EQ]": mclsf,
+                }
+                resp = session.get(base, params=params, timeout=10)
+                resp.raise_for_status()
+                items = _extract_items(resp)
+                records.extend(items)
+                if len(items) < 1000 or page >= 30:
+                    break
+                page += 1
     return records
 
 
@@ -274,21 +359,23 @@ def _extract_items(resp) -> list[dict]:
         return out
 
 
-def _parse_volume_records(records, code_index: dict[str, str] | None = None
+def _parse_volume_records(records, code_index: dict | None = None
                           ) -> pd.DataFrame:
-    """도매시장 응답 레코드(list[dict]) → [date,item,volume]. 품목표준코드로 매핑.
+    """경매 응답 레코드(list[dict]) → [date,item,volume]. (대분류,중분류)로 매핑.
 
-    · code_index: wholesale_code → 품목명(기본 catalog 전체). 미등록 코드는 스킵(§6-3).
+    · code_index: (gds_lclsf_cd, gds_mclsf_cd) → 품목명(기본 catalog 전체). 미등록
+      코드 쌍은 스킵(§6-3).
     · 동일 (date,item) 다건은 합산(여러 시장·법인·등급 → 일 반입량 합).
+    · 물량 = qty × unit_qty(단위물량). unit_qty 결측이면 qty 그대로(프록시).
     · 수량 파싱 실패/일자 결측 레코드는 조용히 버리지 말고 운영 시 로깅 권장.
     """
     idx = code_index if code_index is not None else build_wholesale_index()
     agg: dict[tuple, float] = {}
     for rec in records:
-        code = rec.get(VOL_FIELD_CODE)
-        item = idx.get(str(code)) if code is not None else None
+        key = (str(rec.get(VOL_FIELD_LCLSF)), str(rec.get(VOL_FIELD_MCLSF)))
+        item = idx.get(key)
         if item is None:
-            continue   # 미등록 코드 — 가드(§6-3)
+            continue   # 미등록 코드 쌍 — 가드(§6-3)
         date = _parse_date(str(rec.get(VOL_FIELD_DATE) or ""))
         if date is None:
             continue
@@ -296,6 +383,12 @@ def _parse_volume_records(records, code_index: dict[str, str] | None = None
             qty = float(str(rec.get(VOL_FIELD_QTY)).replace(",", ""))
         except (TypeError, ValueError):
             continue
+        unit_qty = rec.get(VOL_FIELD_UNITQTY)
+        if unit_qty not in (None, ""):
+            try:
+                qty *= float(str(unit_qty).replace(",", ""))
+            except (TypeError, ValueError):
+                pass   # 단위물량 파싱 실패 시 수량만 사용
         agg[(date, item)] = agg.get((date, item), 0.0) + qty
     rows = [{"date": d, "item": it, "volume": v} for (d, it), v in agg.items()]
     return pd.DataFrame(rows, columns=["date", "item", "volume"])
@@ -357,6 +450,49 @@ def verify_catalog_codes(keys: dict, *, end=None, days: int = 14,
             if not rows:
                 info["error"] = "응답 0건 — 코드/기간/단위 매핑 확인"
         except Exception as exc:   # noqa: BLE001 — 점검 도구는 품목별 실패를 격리 보고
+            info["error"] = str(exc)
+        report[item] = info
+    return report
+
+
+def verify_price_api(keys: dict, *, end=None, days: int = 7, session=None) -> dict:
+    """perRegion/price 라이브 점검 — 코드·환산단위 가정을 실데이터로 확인.
+
+    각 품목의 소매(01) 최근 데이터를 조회해 레코드 유무, 그리고 unit/unit_sz 와
+    환산평균가격 표본을 함께 보고한다. **환산가격이 원/kg 인지**는 unit 표본으로
+    확인할 수 있다(추정 대신 실데이터로 확인 — §5.1). catalog 가격 코드가 실제로
+    데이터를 반환하는지 검증하는 용도.
+    반환: {item: {ok, rows, sample_unit, sample_cnvs, error}}.
+    """
+    if session is None:
+        import requests
+        session = requests
+    if not keys.get("data_go_kr"):
+        raise ValueError("data.go.kr 키 누락: data_go_kr (§5.2-5)")
+
+    end = (pd.Timestamp(end) if end is not None else pd.Timestamp.today()).normalize()
+    start = end - pd.Timedelta(days=days - 1)
+    report: dict[str, dict] = {}
+    for item, meta in ITEMS.items():
+        info = {"item_cd": meta.price_item, "ok": False, "rows": 0,
+                "sample_unit": None, "sample_cnvs": None, "error": None}
+        if not (meta.price_ctgry and meta.price_item):
+            info["error"] = "가격 코드 미등록"
+            report[item] = info
+            continue
+        try:
+            recs = _fetch_price_records(keys, meta, PRICE_SE_RETAIL, start, end, session)
+            info["rows"] = len(recs)
+            info["ok"] = len(recs) > 0
+            if recs:
+                r0 = recs[0]
+                unit = (str(r0.get("unit") or "").strip()
+                        + str(r0.get("unit_sz") or "").strip())
+                info["sample_unit"] = unit or None
+                info["sample_cnvs"] = r0.get(PRICE_FIELD_CNVS_AVG)
+            else:
+                info["error"] = "응답 0건 — 코드/기간/시군구·등급 확인"
+        except Exception as exc:   # noqa: BLE001 — 품목별 실패 격리 보고
             info["error"] = str(exc)
         report[item] = info
     return report

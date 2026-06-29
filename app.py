@@ -259,15 +259,26 @@ def sec(title: str, hint: str = "", right: str = "") -> None:
 
 # ── 데이터 로딩 (캐싱 + 폴백, §5.2-6 / T5) ────────────────────────────────
 def _read_keys() -> dict | None:
-    """st.secrets → keys dict. 시크릿 미설정이면 None(샘플 모드)."""
+    """st.secrets → keys dict. 시크릿 미설정이면 None(샘플 모드).
+
+    실연동은 data.go.kr serviceKey 1개(DATA_GO_KR_KEY)면 충분하다(가격·반입량·코드
+    모두 B552845 동일 키). KAMIS 직통키는 선택(코드 점검용)이며 있으면 함께 넘긴다.
+    """
     try:
-        return {
-            "kamis_cert_key": st.secrets["KAMIS_CERT_KEY"],
-            "kamis_cert_id": st.secrets["KAMIS_CERT_ID"],
-            "data_go_kr": st.secrets["DATA_GO_KR_KEY"],
-        }
+        key = st.secrets["DATA_GO_KR_KEY"]
     except Exception:   # FileNotFoundError(secrets.toml 없음) / KeyError 모두 흡수
         return None
+    if not key:
+        return None
+    keys = {"data_go_kr": key}
+    for dst, src in (("kamis_cert_key", "KAMIS_CERT_KEY"), ("kamis_cert_id", "KAMIS_CERT_ID")):
+        try:
+            val = st.secrets[src]
+            if val:
+                keys[dst] = val
+        except Exception:
+            pass
+    return keys
 
 
 @st.cache_data(ttl=6 * 60 * 60, show_spinner="시장 데이터 불러오는 중…")
@@ -288,7 +299,7 @@ def load_market(force_sample: bool):
         df = _get_data("api", keys, day_key)
         if df is None or df.empty:
             raise RuntimeError("API 응답이 비어 있음")
-        return df, "실데이터(KAMIS·도매시장)", None
+        return df, "실데이터(공영도매·소매가격)", None
     except Exception as exc:   # 네트워크/파싱 실패 → 시연 보호 폴백
         df = _get_data("sample", None, day_key)
         return df, "샘플(폴백)", f"실데이터 연동 실패 → 샘플로 대체했습니다: {exc}"

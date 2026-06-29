@@ -6,6 +6,7 @@
 """
 from .data import (
     load_daily, load_from_api, validate_schema, SCHEMA, verify_catalog_codes,
+    verify_price_api,
 )
 from .core import (
     analyze, gluts, sell_first, substitutes, expensive, budget_basket,
@@ -17,7 +18,7 @@ from . import catalog
 
 __all__ = [
     "load_daily", "load_from_api", "validate_schema", "SCHEMA",
-    "verify_catalog_codes",
+    "verify_catalog_codes", "verify_price_api",
     "analyze", "gluts", "sell_first", "substitutes", "expensive", "budget_basket",
     "ItemState", "catalog",
     "VOLUME_SURGE", "PRICE_DROP", "RECENT_DAYS", "BASE_MIN", "BASE_MAX",

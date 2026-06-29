@@ -37,7 +37,7 @@ streamlit run app.py         # http://localhost:8501
 
 ## 남은 작업 (우선순위, 명세서 §8)
 - [x] T1 빌드 안정(selectbox 가드, width="stretch" 핀, numpy 미사용)
-- [~] T2 실연동: `load_from_api` + 반입량 수집(`_collect_volume`/`_parse_volume_records`) + KAMIS 코드검증(`verify_catalog_codes`) 구현, 단위/코드/반입량 픽스처 테스트 완료. **남은 수동 1스텝**: 공식 *품목 코드표*(KAMIS)·*품목표준코드*로 catalog 의 `kamis_*`/`wholesale_code` 채우고, 도매 반입량 `VOLUME_OPERATION`+필드명(`VOL_FIELD_*`)을 현행 명세서로 확정 → `verify_catalog_codes(keys)`로 검증(임의 추정 금지).
+- [x] T2 실연동(data.go.kr B552845, serviceKey 1개): **가격** `perRegion/price`(환산평균가 = 원/kg, catalog `price_ctgry`/`price_item` 정적등록) · **반입량** `katRealTime2/trades2`(일자별 qty×unit_qty) · **코드** `katCode/goods`로 품목명↔중분류코드 런타임 자동해석(`_resolve_wholesale_index`). 어떤 실패든 가격만으로 폴백. 파싱 픽스처 + 오프라인 통합시뮬 통과. 점검: `verify_price_api(keys)`. ⚠️ data.go.kr 키는 **Decoding** 값 사용.
 - [x] T3 시크릿·계층 분리
 - [x] T4 용어 정합성("최근 기준선") + seasonal 스텁
 - [x] T5 폴백/배너 + 캐싱 ttl
